@@ -18,7 +18,7 @@ object Helpers {
     reviews
       .map(reviewTabSeparated => reviewTabSeparated.split('\t'))
       .map(split => convertSplitArrayIntoKafkaReviewClass(split))
-      .map(review => enrichKafkaReviewClassWithHBaseUserInfo(review))
+      .mapPartitions(review => enrichKafkaReviewClassWithHBaseUserInfo(review))
   }
 
   def convertSplitArrayIntoKafkaReviewClass(split: Array[String]): KafkaReviewCaseClass = {
@@ -55,38 +55,41 @@ object Helpers {
       review_date)
   }
 
-  def enrichKafkaReviewClassWithHBaseUserInfo(review: KafkaReviewCaseClass): EnrichedData = {
+  def enrichKafkaReviewClassWithHBaseUserInfo(reviewPartition: Iterator[KafkaReviewCaseClass]): Iterator[EnrichedData] = {
     val conf: Configuration = HBaseConfiguration.create()
     val hbaseZookeeperQuorum = env.get("HBASE_ZOOKEEPER_QUORUM")
     conf.set("hbase.zookeeper.quorum", hbaseZookeeperQuorum)
 
     var connection: Connection = null
     var table: org.apache.hadoop.hbase.client.Table = null
-    var enrichedData: EnrichedData = null
+    var returnValue: Iterator[EnrichedData] = null
 
     try {
       connection = ConnectionFactory.createConnection(conf)
       val hbaseTableName = env.get("HBASE_TABLE_NAME")
       table = connection.getTable(TableName.valueOf(hbaseTableName))
 
-      val get = new Get(review.customer_id)
-      val result = table.get(get)
+      returnValue = reviewPartition.map((review) => {
+        val get = new Get(review.customer_id)
+        val result = table.get(get)
 
-      val customerName = Bytes.toString(result.getValue("f1", "name"))
-      val customerBirthdate = Bytes.toString(result.getValue("f1", "birthdate"))
-      val customerMail = Bytes.toString(result.getValue("f1", "mail"))
-      val customerSex = Bytes.toString(result.getValue("f1", "sex"))
-      val customerUsername = Bytes.toString(result.getValue("f1", "username"))
+        val customerName = Bytes.toString(result.getValue("f1", "name"))
+        val customerBirthdate = Bytes.toString(result.getValue("f1", "birthdate"))
+        val customerMail = Bytes.toString(result.getValue("f1", "mail"))
+        val customerSex = Bytes.toString(result.getValue("f1", "sex"))
+        val customerUsername = Bytes.toString(result.getValue("f1", "username"))
 
-      val hBaseUserInfoCaseClass = HBaseUserInfo(customerName, customerBirthdate, customerMail, customerSex, customerUsername)
-      enrichedData = EnrichedData(review, hBaseUserInfoCaseClass)
+        val hBaseUserInfoCaseClass = HBaseUserInfo(customerName, customerBirthdate, customerMail, customerSex, customerUsername)
+        val enrichedData = EnrichedData(review, hBaseUserInfoCaseClass)
 
-      println("Processed a new record: " + enrichedData)
+        println("Processed a new record: " + enrichedData)
+        enrichedData
+      })
     } catch {
       case e: Exception => logger.error("Error in connecting to HBase", e)
     }
 
-    enrichedData
+    returnValue
   }
 
 }
